@@ -42,7 +42,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "mcpName": "io.github.pooriaarab/agentic-publish",
+  "mcpName": "io.github.itsryanarmani/agentic-publish",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

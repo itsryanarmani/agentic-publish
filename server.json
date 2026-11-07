@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.pooriaarab/agentic-publish",
+  "name": "io.github.itsryanarmani/agentic-publish",
   "description": "Route social posts across Content Rabbit, Zernio, Ayrshare, and direct APIs.",
   "version": "0.2.0",
   "repository": {
