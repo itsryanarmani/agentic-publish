@@ -14,7 +14,9 @@ import { AllowAllApprovalHook, DenyAllApprovalHook, type ApprovalHook } from "./
 // Review round (Codex): 10. two calls at once both post. 11. a pending
 // post not yet visible gets posted again. 12. a 5xx that hid a real
 // post is retried as a new post. 13. two providers on one store both
-// post. 14. the earlier post is on page two of the feed.
+// post. 14. the earlier post is on page two of the feed. 15. a next
+// page without a cursor. 16. a pending schedule that has passed blocks
+// the queue forever.
 
 const NOW = 1_773_158_400; // 2026-03-10T16:00:00Z
 const TOKEN = "EAAfakePageToken0123456789abcdef";
@@ -109,6 +111,29 @@ describe("facebook-page provider", () => {
     expect(graph.posts).toHaveLength(0);
     const later = provider("page-1", { state, now: () => (NOW + 601) * 1000 });
     expect(await later.publish(ITEM, LIVE)).toMatchObject({ status: "published" });
+  });
+
+  test("stays pending when a next page has no cursor", async () => {
+    const state = new MemoryPublishStateStore();
+    await provider("page-down", { state }).publish(ITEM, LIVE);
+    const fetchFn: typeof fetch = async (url, init) =>
+      String(url).includes("/feed?") ? new Response(JSON.stringify({ data: [], paging: { next: "x" } })) : fetch(url, init);
+    const later = provider("page-1", { state, fetchFn, now: () => (NOW + 601) * 1000 });
+    expect(await later.publish(ITEM, LIVE)).toMatchObject({ error: { kind: "unknown-outcome" } });
+    expect(graph.posts).toHaveLength(1);
+  });
+
+  test("closes a pending schedule that has passed and is not on the Page", async () => {
+    const state = new MemoryPublishStateStore();
+    await provider("page-down", { state }).publish({ ...ITEM, scheduledAt: NOW + 3600 }, LIVE);
+    graph.posts.length = 0;
+    const nextDay = provider("page-1", { state, now: () => (NOW + 86_400) * 1000 });
+    expect(await nextDay.publish({ ...ITEM, scheduledAt: NOW + 3600 }, LIVE)).toMatchObject({ error: { kind: "invalid-input" } });
+    expect(await state.get("facebook-page:acme:tip-001")).toMatchObject({ status: "failed", retryable: false });
+    expect(graph.requests.filter((r) => r.method === "GET").map((r) => r.path.split("?")[0])).toEqual([
+      "/v21.0/page-1/scheduled_posts",
+      "/v21.0/page-1/feed",
+    ]);
   });
 
   test("finds an earlier post on page two of the feed", async () => {

@@ -132,8 +132,17 @@ export class FacebookPageProvider {
 
   // Looks for a post with the same text that went out after the claim.
   // Returns its id, null when absent, or throws when the lookup fails.
+  // A scheduled post moves from scheduled_posts to the feed when it
+  // goes out, so a scheduled record checks both.
   private async findExisting(pageId: string, token: string, record: PublishRecord, text: string): Promise<string | null> {
-    const edge = record.scheduledFor ? "scheduled_posts" : "feed";
+    for (const edge of record.scheduledFor ? ["scheduled_posts", "feed"] : ["feed"]) {
+      const found = await this.findOnEdge(pageId, token, record, text, edge);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  private async findOnEdge(pageId: string, token: string, record: PublishRecord, text: string, edge: string): Promise<string | null> {
     const since = Math.floor(Date.parse(record.at) / 1000) - 60;
     let after = "";
     // Read every page; a post on page two still counts. Give up, and
@@ -145,8 +154,9 @@ export class FacebookPageProvider {
       const body = (await response.json()) as { data?: { id?: string; message?: string }[]; paging?: { next?: string; cursors?: { after?: string } } };
       const found = (body.data ?? []).find((row) => row.message === text && typeof row.id === "string");
       if (found?.id) return found.id;
-      after = body.paging?.next ? (body.paging.cursors?.after ?? "") : "";
-      if (!after) return null;
+      if (!body.paging?.next) return null;
+      after = body.paging.cursors?.after ?? "";
+      if (!after) throw new Error("lookup has a next page but no cursor");
     }
     throw new Error("lookup stopped after 10 pages");
   }
@@ -235,7 +245,12 @@ export class FacebookPageProvider {
         return unknown("earlier post not visible on the Page yet");
       }
     }
-    if (badSchedule) return invalid(scheduleError);
+    if (badSchedule) {
+      // A pending schedule that has passed and is not on the Page will
+      // never go out: close it so the daily planner moves on.
+      if (existing) await this.options.state.set({ ...existing, status: "failed", retryable: false, error: "invalid-input" });
+      return invalid(scheduleError);
+    }
     const record: PublishRecord = {
       key: keyed.idempotencyKey,
       brand,
