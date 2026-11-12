@@ -5,12 +5,12 @@ import { GuardError, VendorError, recordCost, type Guards, type Logger } from ".
 
 const require = createRequire(import.meta.url);
 
-// Channels. Four direct channels, each with a char limit. TikTok and
+// Channels. Five channels, each with a char limit. TikTok and
 // Instagram need media; a text-only direct post to them fails fast.
 
-export type Channel = "x" | "linkedin" | "tiktok" | "instagram";
+export type Channel = "x" | "linkedin" | "tiktok" | "instagram" | "facebook";
 
-export const CHANNELS: Channel[] = ["x", "linkedin", "tiktok", "instagram"];
+export const CHANNELS: Channel[] = ["x", "linkedin", "tiktok", "instagram", "facebook"];
 
 export interface ChannelLimit {
   channel: Channel;
@@ -23,6 +23,7 @@ export const CHANNEL_LIMITS: Record<Channel, ChannelLimit> = {
   linkedin: { channel: "linkedin", maxChars: 3000, needsMedia: false },
   tiktok: { channel: "tiktok", maxChars: 2200, needsMedia: true },
   instagram: { channel: "instagram", maxChars: 2200, needsMedia: true },
+  facebook: { channel: "facebook", maxChars: 63206, needsMedia: false },
 };
 
 // Post shapes. One post feeds every adapter. Aggregators take the
@@ -666,6 +667,7 @@ const DEFAULT_INTERVALS: Record<Channel, number> = {
   linkedin: 180_000,
   tiktok: 300_000,
   instagram: 300_000,
+  facebook: 300_000,
 };
 
 export class Pacer {
@@ -812,6 +814,9 @@ export class FileQueueStore implements QueueStore {
 export interface ApprovalContext {
   brand?: string;
   live: boolean;
+  // Idempotency key of the item, when the caller has one, so an
+  // approver can bind its decision to one post.
+  key?: string;
 }
 
 export interface ApprovalDecision {

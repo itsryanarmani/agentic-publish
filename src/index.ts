@@ -91,6 +91,11 @@ export type {
   DrainResult,
 } from "./publish.js";
 export { postKey, idempotencyKey, MemoryPublishStateStore, planDaily } from "./cadence.js";
+export { FacebookPageProvider, envTokenResolver, envPageIdResolver, scrubSecrets } from "./facebook.js";
+export type {
+  TokenResolver, PageIdResolver, FacebookPageOptions, FacebookPageItem,
+  FacebookPublishOptions, FacebookErrorKind, FacebookPageError, FacebookPageResult,
+} from "./facebook.js";
 export type {
   KeyedContent,
   PublishStatus,
