@@ -7,6 +7,10 @@ Keywords: social, publish, private-repo-c4e6, zernio, ayrshare.
 - SDK: import { publishPost, defaultAdapters } from "agentic-publish".
 - CLI: agentic-publish publish --text "..." --targets x.
 - MCP: run agentic-publish mcp, then call publish_post.
+- Facebook Page: FacebookPageProvider posts to /{page-id}/feed with an injected token resolver.
+  Dry run is the default. Live needs dryRun false, an approval hook, and live: true.
+  Post keys make retries safe. planDaily() and runFacebookDaily() run one cron tick.
+  CLI: agentic-publish facebook publish|daily. MCP: facebook_page_publish, facebook_daily.
 
 ## Docs
 
