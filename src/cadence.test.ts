@@ -24,6 +24,7 @@ import { BrandQueue, MemoryQueueStore } from "./publish.js";
 // 9. a ":" in brand or key collides. 10. a key with spaces never
 // matches its record. 11. a scheduled post counts on the wrong day.
 // 12. an item scheduled for tomorrow ignores tomorrow's cap.
+// 13. an item whose schedule has passed blocks the items behind it.
 
 const CADENCE: DailyCadence = { timezone: "America/Vancouver", window: "09:00-11:00", maxPerDay: 1 };
 const ITEMS: CadenceItem[] = [
@@ -128,6 +129,14 @@ describe("planDaily", () => {
     expect(plan).toMatchObject({ due: true, item: { key: "now" } });
     const capped = planDaily({ brand: "acme", items: items.slice(0, 1), cadence: CADENCE, history: [sent], now: IN_WINDOW });
     expect(capped).toMatchObject({ due: false, reason: "daily-cap" });
+  });
+
+  test("skips an item whose schedule can no longer be met", () => {
+    const passed = Date.parse("2026-03-10T17:35:00Z") / 1000; // 5 minutes ahead
+    const items: CadenceItem[] = [{ key: "old", text: "Old", approved: true, scheduledAt: passed }, ...ITEMS];
+    const history = [record("old", "failed", "2026-03-10T16:00:00Z", true)];
+    const plan = planDaily({ brand: "acme", items, cadence: CADENCE, history, now: IN_WINDOW });
+    expect(plan).toMatchObject({ due: true, item: { key: "tip-001" } });
   });
 
   test("returns no item outside the window", () => {

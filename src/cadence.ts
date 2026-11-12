@@ -184,9 +184,12 @@ export function planDaily(input: DailyPlanInput): DailyPlan {
   // retried cron never posts a second item in its place.
   const pending = approved.find((item) => byKey.get(keyOf(item))?.status === "pending");
   if (pending) return { ...base, due: true, item: pending, idempotencyKey: keyOf(pending), retry: true };
+  // A schedule less than 10 minutes ahead can no longer be met; skip it
+  // so it never blocks the items behind it.
+  const stale = (item: CadenceItem): boolean => item.scheduledAt !== undefined && item.scheduledAt * 1000 < now.getTime() + 600_000;
   const open = approved.filter((item) => {
     const found = byKey.get(keyOf(item));
-    return !found || (found.status === "failed" && found.retryable === true);
+    return !stale(item) && (!found || (found.status === "failed" && found.retryable === true));
   });
   if (open.length === 0) return { ...base, due: false, reason: "queue-empty" };
   // The cap applies to the day each item would go out.
