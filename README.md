@@ -121,13 +121,13 @@ The text limits above are package constants, not a complete statement of platfor
 
 SDK exports include `publishPost`, adapter selectors, seven adapter classes, `BrandQueue`, two queue stores, `Pacer`, and three approval hooks.
 Core router, logging, guards, text-summary, and cost helpers are also re-exported.
-CLI commands are `publish`, `queue`, `pacing`, `costs`, and `mcp`.
+CLI commands are `publish`, `queue`, `facebook`, `pacing`, `costs`, and `mcp`.
 Queue subcommands are `enqueue`, `list`, `remove`, and `drain`.
 Use `--help` or `-h` for help, and `--version` or `-V` for the version.
 `--adapter all` selects the three-aggregator default chain, not all seven adapters.
 
 Start stdio MCP with `npx agentic-publish mcp` or `npx --package agentic-publish agentic-publish-mcp`.
-Its seven tools are `publish_post`, `queue_enqueue`, `queue_list`, `queue_remove`, `queue_drain`, `pacing_status`, and `get_cost_report`.
+Its nine tools are `publish_post`, `queue_enqueue`, `queue_list`, `queue_remove`, `queue_drain`, `facebook_page_publish`, `facebook_daily`, `pacing_status`, and `get_cost_report`.
 Publishing and drains default to dry runs. Pass `dryRun: false` for a live MCP request.
 The source Worker has `GET /health`, `GET /limits`, and `POST /preview`; it has no live publishing route.
 
@@ -140,7 +140,8 @@ Select a direct adapter with its matching single target; direct adapters do not 
 
 Fallback stops after the first successful adapter, not after each channel succeeds.
 Partial remote publication followed by an error can produce duplicates through a later adapter.
-There are no idempotency keys or automatic reconciliation. Inspect vendor state before retrying uncertain results.
+The adapter chain has no idempotency keys or reconciliation. Inspect vendor state before retrying uncertain results.
+The `facebook-page` provider has both; see [Facebook Page](#facebook-page).
 HTTP requests default to ten-second timeouts; the chain proceeds to another adapter after a failure.
 TikTok reads status once and can return a receipt while processing continues.
 Instagram reels default to ten status reads, five seconds apart.
@@ -175,6 +176,7 @@ Export credentials in your shell or secret store. The package does not load `.en
 | LinkedIn | `LINKEDIN_ACCESS_TOKEN`, `LINKEDIN_AUTHOR_URN` |
 | TikTok | `TIKTOK_ACCESS_TOKEN`, `TIKTOK_OPEN_ID` |
 | Meta Instagram | `INSTAGRAM_ACCESS_TOKEN`, `INSTAGRAM_USER_ID` |
+| Facebook Page | `FACEBOOK_PAGE_TOKEN[_<BRAND>]`, `FACEBOOK_PAGE_ID[_<BRAND>]`; see [Facebook Page](#facebook-page) |
 
 Network adapters accept constructor `apiKey`, `fetchFn`, `baseUrl`, and `timeoutMs` options.
 Live CLI publishing needs `--live` plus an approval source.
@@ -196,6 +198,102 @@ Read `getCostReport()` or MCP `get_cost_report` in the same process after live w
 - [Ayrshare social API setup](https://www.ayrshare.com/docs/introduction)
 - [Package onboarding](https://github.com/pooriaarab/agentic-publish/blob/main/docs/onboarding.md)
 - [Core contract reference](https://github.com/pooriaarab/agentic-publish/blob/main/docs/agentic-core.md)
+
+## Facebook Page
+
+The `facebook-page` provider posts text, with an optional link, to one Facebook Page per brand through the Graph API `/{page-id}/feed` edge.
+It suits a daily post across many Pages: each brand has its own Page, token, timezone, and posting window.
+It runs beside the adapter chain, not inside it, and returns typed results instead of throwing.
+
+### One-time setup
+
+1. Make sure your business owns or manages the Page. A system user or a Page admin needs the **Create content** task on that Page.
+2. Create a Meta app and add the Pages API. Standard access is enough for Pages that your own business owns. App Review and advanced access are only for Pages owned by other people.
+3. Get a Page access token with `pages_manage_posts` and `pages_read_engagement`. A system user token from Business Settings does not expire after 60 days the way a user token does.
+4. Store the token in your secret store. Never commit it.
+
+### Credentials
+
+Inject resolvers so each project reads tokens its own way, from env, a secret store, or a Worker binding:
+
+```ts
+import { FacebookPageProvider, MemoryPublishStateStore } from 'agentic-publish';
+
+const facebook = new FacebookPageProvider({
+  state: new MemoryPublishStateStore(), // use a KV, D1, or file store in production
+  pageId: (brand) => pages[brand].pageId,
+  token: async (brand) => secrets.get(`fb-token-${brand}`),
+  live: true, // the provider switch; leave it off until previews look right
+});
+```
+
+Without resolvers, the provider reads `FACEBOOK_PAGE_TOKEN_<BRAND>` then `FACEBOOK_PAGE_TOKEN`, and `FACEBOOK_PAGE_ID_<BRAND>` then `FACEBOOK_PAGE_ID`.
+`<BRAND>` is the brand in upper case, with other characters replaced by `_`.
+The provider reads no other env names and no files on its own.
+The CLI and `facebookProviderFromEnv()` also read `AGENTIC_PUBLISH_FACEBOOK_LIVE=1` (the switch), `AGENTIC_PUBLISH_FACEBOOK_STATE` (state file path), `FACEBOOK_GRAPH_BASE_URL`, and `FACEBOOK_GRAPH_TIMEOUT_MS`.
+
+### Live posts need three things
+
+A post goes live only when all three are true. Otherwise you get a `preview` or a `blocked` result.
+
+- `dryRun: false` (CLI `--live`).
+- An approval hook that approves the item. The hook context carries the idempotency key.
+- The provider switch: `live: true` (CLI `AGENTIC_PUBLISH_FACEBOOK_LIVE=1`).
+
+### Post keys and retries
+
+Each item has a stable key: the one you give, or a hash of brand, text, and link.
+The idempotency key is `facebook-page:<brand>:<key>`. A second publish of a published key returns `duplicate` and makes no Graph call.
+Before the Graph call, the provider writes a `pending` record. If the call times out or Graph answers with a 5xx, the record stays `pending`.
+The next run looks for the post on the Page and marks it `published`, so a retried cron does not post twice.
+If the Page does not show the post yet, the provider waits until the record is 10 minutes old (`reconcileGraceMs`) before it posts again.
+The lookup matches on the post text, so give each item unique text.
+
+A state store has three methods: `get(key)`, `set(record)`, and `list(brand)`.
+`MemoryPublishStateStore` ships for tests. `FilePublishStateStore` ships for the CLI.
+For Workers, back the same three methods with KV (key is `record.key`) or D1 (one row per key).
+Calls for one key run one at a time inside a process. Stores have no lock across processes, so run one cron writer per state store at a time.
+
+### Results
+
+| `status` | Meaning |
+| --- | --- |
+| `preview` | Dry run. Shows the request, never the token. |
+| `published` / `scheduled` | Graph returned a post id. |
+| `duplicate` | The key was already published, or a retry found the earlier post (`reconciled: true`). |
+| `blocked` | `provider-switch-off`, `no-approval-hook`, `approval-denied`, or `approval-failed`. |
+| `failed` | `error.kind` is `token-expired`, `permission-missing`, `rate-limited` (with `retryAfterSeconds`), `content-rejected`, `unknown-outcome`, `token-unavailable`, `invalid-input`, or `graph-error`. |
+
+Error messages are scrubbed of the token. The token goes in the `Authorization` header, never in a URL.
+`scheduledAt` takes unix seconds 10 minutes to 30 days ahead; without it the post goes out now.
+
+### Daily posts from a cron
+
+`planDaily()` is a pure function. It takes approved items, a timezone, a local window, a daily cap, history, and the time. It returns the next due item or a reason: `outside-window`, `daily-cap`, or `queue-empty`.
+`runFacebookDaily()` plans and then publishes. The library starts no timers; schedule it with a Cloudflare cron trigger or a GitHub Actions schedule.
+
+Example for a made-up Page, brand `acme-bakery`, Page id `100000000000001`:
+
+```sh
+export FACEBOOK_PAGE_ID_ACME_BAKERY=100000000000001
+export FACEBOOK_PAGE_TOKEN_ACME_BAKERY=...   # from your secret store
+cat > items.json <<'JSON'
+[{ "key": "2026-03-10", "text": "Fresh sourdough at 8.", "link": "https://example.com/bread", "approved": true }]
+JSON
+
+# 1. Preview. No Graph call.
+npx agentic-publish facebook daily --brand acme-bakery --items items.json \
+  --timezone America/Toronto --window 09:00-11:00 --max-per-day 1
+
+# 2. Go live only after the preview looks right.
+AGENTIC_PUBLISH_FACEBOOK_LIVE=1 npx agentic-publish facebook daily --brand acme-bakery \
+  --items items.json --timezone America/Toronto --window 09:00-11:00 --live --auto-approve
+```
+
+Run the same command every 15 minutes. Inside the window it posts at most once a day. Outside the window it does nothing.
+Keep the state file between runs; it is what stops a second post.
+For a single post, use `facebook publish --brand <b> --key <k> --text <t> [--link <u>] [--schedule <unix>]`.
+MCP exposes the same two flows as `facebook_page_publish` and `facebook_daily`.
 
 ## Status
 

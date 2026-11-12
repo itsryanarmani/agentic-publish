@@ -26,6 +26,8 @@ Keywords: social, publish, private-repo-c4e6, zernio, ayrshare.
 | queue_list | List queued posts. |
 | queue_remove | Drop one queued post. |
 | queue_drain | Publish one brand queue in order. Dry run is the default. |
+| facebook_page_publish | Post to one brand's Facebook Page. Dry run is the default. |
+| facebook_daily | Plan one daily tick and publish the due item. Dry run is the default. |
 | pacing_status | Read pacing gaps and char limits. |
 | get_cost_report | Read session cost totals. |
 
