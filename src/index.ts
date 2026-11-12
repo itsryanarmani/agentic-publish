@@ -91,6 +91,10 @@ export type {
   DrainResult,
 } from "./publish.js";
 export { postKey, idempotencyKey, MemoryPublishStateStore, planDaily } from "./cadence.js";
+export {
+  FilePublishStateStore, defaultFacebookStatePath, facebookProviderFromEnv, runFacebookDaily,
+} from "./facebook-host.js";
+export type { FacebookDailyOptions, FacebookDailyResult } from "./facebook-host.js";
 export { FacebookPageProvider, envTokenResolver, envPageIdResolver, scrubSecrets } from "./facebook.js";
 export type {
   TokenResolver, PageIdResolver, FacebookPageOptions, FacebookPageItem,

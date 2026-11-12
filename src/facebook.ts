@@ -113,6 +113,11 @@ export class FacebookPageProvider {
 
   constructor(private readonly options: FacebookPageOptions) {}
 
+  // Publish records for one brand, for the daily planner.
+  history(brand: string): Promise<PublishRecord[]> {
+    return this.options.state.list(brand.trim());
+  }
+
   private get base(): string {
     return (this.options.baseUrl ?? "https://graph.facebook.com/v21.0").replace(/\/$/, "");
   }

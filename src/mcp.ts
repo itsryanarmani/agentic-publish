@@ -25,6 +25,8 @@ import {
   type QueueStore,
   type SocialPost,
 } from "./publish.js";
+import type { FacebookPageProvider } from "./facebook.js";
+import { facebookProviderFromEnv, runFacebookDaily } from "./facebook-host.js";
 
 export interface McpDeps {
   adapters?: PublishAdapter[];
@@ -33,6 +35,7 @@ export interface McpDeps {
   queueStore?: QueueStore;
   approval?: ApprovalHook;
   pacer?: Pacer;
+  facebook?: FacebookPageProvider;
 }
 
 const postShape = {
@@ -215,6 +218,60 @@ export function createMcpServer(deps: McpDeps = {}): McpServer {
         if (error instanceof GuardError || error instanceof VendorError) {
           return errorResult(error);
         }
+        throw error;
+      }
+    },
+  );
+
+  let facebook = deps.facebook;
+  const fb = (): FacebookPageProvider => (facebook ??= facebookProviderFromEnv());
+  const liveHint = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+
+  server.registerTool(
+    "facebook_page_publish",
+    {
+      description:
+        "Post text and an optional link to a brand's Facebook Page. Dry run is the default. A second publish of one key is skipped.",
+      inputSchema: {
+        brand: z.string().describe("Brand that owns the Page."),
+        text: z.string().describe("The post text."),
+        key: z.string().optional().describe("Stable post key; derived from brand, text, and link when absent."),
+        link: z.string().optional().describe("Link to attach."),
+        scheduledAt: z.number().int().optional().describe("Unix seconds, 10 minutes to 30 days ahead."),
+        dryRun: z.boolean().optional().describe("Preview without delivery."),
+      },
+      annotations: liveHint,
+    },
+    async ({ brand, text, key, link, scheduledAt, dryRun }) => {
+      const live = (dryRun ?? true) === false;
+      const item = { brand, text, ...(key ? { key } : {}), ...(link ? { link } : {}), ...(scheduledAt !== undefined ? { scheduledAt } : {}) };
+      return okResult(await fb().publish(item, { dryRun: !live, approval: live ? approval : undefined }));
+    },
+  );
+
+  server.registerTool(
+    "facebook_daily",
+    {
+      description: "Plan one daily tick for a brand and publish the next due item. Dry run is the default.",
+      inputSchema: {
+        brand: z.string().describe("Brand that owns the Page."),
+        items: z
+          .array(z.object({ key: z.string(), text: z.string(), link: z.string().optional(), approved: z.boolean() }))
+          .describe("Queued items in order."),
+        timezone: z.string().describe("IANA timezone of the brand."),
+        window: z.string().describe("Local window, HH:MM-HH:MM."),
+        maxPerDay: z.number().int().positive().optional().describe("Max posts per local day. Default 1."),
+        dryRun: z.boolean().optional().describe("Preview without delivery."),
+      },
+      annotations: liveHint,
+    },
+    async ({ brand, items, timezone, window, maxPerDay, dryRun }) => {
+      try {
+        const live = (dryRun ?? true) === false;
+        const cadence = { timezone, window, maxPerDay: maxPerDay ?? 1 };
+        return okResult(await runFacebookDaily({ provider: fb(), brand, items, cadence, dryRun: !live, approval: live ? approval : undefined }));
+      } catch (error) {
+        if (error instanceof VendorError) return errorResult(error);
         throw error;
       }
     },
