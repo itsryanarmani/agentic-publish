@@ -90,6 +90,17 @@ export type {
   DrainFailure,
   DrainResult,
 } from "./publish.js";
+export { postKey, idempotencyKey, MemoryPublishStateStore, planDaily } from "./cadence.js";
+export type {
+  KeyedContent,
+  PublishStatus,
+  PublishRecord,
+  PublishStateStore,
+  CadenceItem,
+  DailyCadence,
+  DailyPlanInput,
+  DailyPlan,
+} from "./cadence.js";
 
 import { defineBrand, type BrandConfig } from "./core.js";
 import { VERSION } from "./version.js";
