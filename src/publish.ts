@@ -1065,7 +1065,8 @@ export class BrandQueue {
     const name = brand.trim();
     if (!name) throw new VendorError("queue: brand must not be empty");
     validatePost(post);
-    const key = postKey(name, { text: post.text, link: post.link, key: options.key });
+    const parts = [normalizeTargets(post.targets).join(","), ...(post.mediaUrls ?? [])];
+    const key = postKey(name, { text: post.text, link: post.link, key: options.key, parts });
     const items = this.store.load();
     const existing = items.find((item) => item.brand === name && item.key === key);
     if (existing) return existing;

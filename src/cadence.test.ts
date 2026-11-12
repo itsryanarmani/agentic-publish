@@ -20,6 +20,9 @@ import { BrandQueue, MemoryQueueStore } from "./publish.js";
 // 6. An unknown timezone or a bad window string is accepted.
 // 7. A retry after an unknown outcome skips the pending item and
 //    posts a second item on the same day.
+// Review round (Codex): 8. derived keys ignore targets or media.
+// 9. a ":" in brand or key collides. 10. a key with spaces never
+// matches its record. 11. a scheduled post counts on the wrong day.
 
 const CADENCE: DailyCadence = { timezone: "America/Vancouver", window: "09:00-11:00", maxPerDay: 1 };
 const ITEMS: CadenceItem[] = [
@@ -41,6 +44,16 @@ describe("post keys", () => {
     expect(a).toBe(postKey("acme", { text: "Hi", link: "https://example.com" }));
     expect(a).not.toBe(postKey("globex", { text: "Hi", link: "https://example.com" }));
     expect(a).not.toBe(postKey("acme", { text: "Hi" }));
+    expect(postKey("acme", { text: "Hi", parts: ["x"] })).not.toBe(postKey("acme", { text: "Hi", parts: ["linkedin"] }));
+    expect(idempotencyKey("p", "acme:eu", "daily")).not.toBe(idempotencyKey("p", "acme", "eu:daily"));
+  });
+
+  test("queue keys include targets and media", () => {
+    const queue = new BrandQueue(new MemoryQueueStore());
+    queue.enqueue("acme", { text: "Same", targets: ["x"] });
+    queue.enqueue("acme", { text: "Same", targets: ["linkedin"] });
+    queue.enqueue("acme", { text: "Same", targets: ["x"], mediaUrls: ["https://example.com/a.png"] });
+    expect(queue.list("acme")).toHaveLength(3);
   });
 
   test("a retried enqueue returns the existing entry, not a second one", () => {
@@ -83,6 +96,24 @@ describe("planDaily", () => {
       now: new Date("2026-03-11T17:30:00Z"),
     });
     expect(nextDay).toMatchObject({ due: true, localDate: "2026-03-11", item: { key: "tip-002" } });
+  });
+
+  test("matches a key with spaces to its record", () => {
+    const plan = planDaily({
+      brand: " acme ",
+      items: [{ key: " tip-001 ", text: "Tip one", approved: true }, ...ITEMS.slice(1)],
+      cadence: { ...CADENCE, maxPerDay: 5 },
+      history: [record("tip-001", "published", "2026-03-01T17:00:00Z")],
+      now: IN_WINDOW,
+    });
+    expect(plan).toMatchObject({ due: true, item: { key: "tip-002" } });
+  });
+
+  test("counts a scheduled post on the day it goes out", () => {
+    // Sent on the 9th, scheduled for 10:00 on the 10th (17:00 UTC).
+    const sent = { ...record("tip-001", "published", "2026-03-09T17:00:00Z"), scheduledFor: Date.parse("2026-03-10T17:00:00Z") / 1000 };
+    const plan = planDaily({ brand: "acme", items: ITEMS, cadence: CADENCE, history: [sent], now: IN_WINDOW });
+    expect(plan).toMatchObject({ due: false, reason: "daily-cap" });
   });
 
   test("returns no item outside the window", () => {

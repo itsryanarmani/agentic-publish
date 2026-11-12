@@ -9,6 +9,9 @@ export interface KeyedContent {
   text: string;
   link?: string;
   key?: string;
+  // Extra fields that make two posts different, such as targets or
+  // media URLs.
+  parts?: string[];
 }
 
 function hash53(input: string): string {
@@ -28,11 +31,15 @@ function hash53(input: string): string {
 export function postKey(brand: string, content: KeyedContent): string {
   const given = content.key?.trim();
   if (given) return given;
-  return `h-${hash53(`${brand.trim()}\u0000${content.text}\u0000${content.link ?? ""}`)}`;
+  const fields = [brand.trim(), content.text, content.link ?? "", ...(content.parts ?? [])];
+  return `h-${hash53(fields.join("\u0000"))}`;
 }
 
+// Escapes ":" so "acme:eu" + "daily" and "acme" + "eu:daily" differ.
+const part = (value: string): string => value.trim().replace(/%/g, "%25").replace(/:/g, "%3A");
+
 export function idempotencyKey(provider: string, brand: string, key: string): string {
-  return `${provider}:${brand.trim()}:${key}`;
+  return `${provider}:${part(brand)}:${part(key)}`;
 }
 
 // Publish state. One record per idempotency key. A provider writes
@@ -146,7 +153,8 @@ function localClock(at: Date, timezone: string): { date: string; time: string } 
 }
 
 export function planDaily(input: DailyPlanInput): DailyPlan {
-  const { brand, cadence, now } = input;
+  const { cadence, now } = input;
+  const brand = input.brand.trim();
   const provider = input.provider ?? "facebook-page";
   const [start, end] = cadence.window.split("-");
   if (start === undefined || end === undefined) {
@@ -161,14 +169,18 @@ export function planDaily(input: DailyPlanInput): DailyPlan {
   const clock = localClock(now, cadence.timezone);
   const byKey = new Map(input.history.filter((r) => r.brand === brand).map((r) => [r.key, r]));
   const publishedToday = input.history.filter(
-    (r) => r.brand === brand && r.status === "published" && localClock(new Date(r.at), cadence.timezone).date === clock.date,
+    // A scheduled post counts on the day it goes out, not the day it was sent.
+    (r) =>
+      r.brand === brand &&
+      r.status === "published" &&
+      localClock(r.scheduledFor ? new Date(r.scheduledFor * 1000) : new Date(r.at), cadence.timezone).date === clock.date,
   ).length;
   const base: PlanBase = { brand, localDate: clock.date, localTime: clock.time, publishedToday };
   const nowMinutes = minutes(clock.time);
   if (nowMinutes < from || nowMinutes >= to) return { ...base, due: false, reason: "outside-window" };
 
   const approved = input.items.filter((item) => item.approved);
-  const keyOf = (item: CadenceItem): string => idempotencyKey(provider, brand, item.key);
+  const keyOf = (item: CadenceItem): string => idempotencyKey(provider, brand, postKey(brand, item));
   // An unknown outcome goes first: the provider reconciles it, so a
   // retried cron never posts a second item in its place.
   const pending = approved.find((item) => byKey.get(keyOf(item))?.status === "pending");
