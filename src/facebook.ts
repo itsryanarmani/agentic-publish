@@ -105,10 +105,11 @@ function classify(status: number, body: unknown, retryAfter: string | null): Omi
   return { ...base, kind: "graph-error", retryable: code === 1 || code === 2 };
 }
 
+// Per-key locks, shared by every provider that uses the same store.
+const LOCKS = new WeakMap<PublishStateStore, Map<string, Promise<unknown>>>();
+
 export class FacebookPageProvider {
   readonly name = "facebook-page";
-
-  private readonly locks = new Map<string, Promise<unknown>>();
 
   constructor(private readonly options: FacebookPageOptions) {}
 
@@ -134,20 +135,32 @@ export class FacebookPageProvider {
   private async findExisting(pageId: string, token: string, record: PublishRecord, text: string): Promise<string | null> {
     const edge = record.scheduledFor ? "scheduled_posts" : "feed";
     const since = Math.floor(Date.parse(record.at) / 1000) - 60;
-    const response = await this.call(`/${encodeURIComponent(pageId)}/${edge}?fields=id,message,created_time&since=${since}&limit=50`, token);
-    if (!response.ok) throw new Error(`lookup got status ${response.status}`);
-    const rows = ((await response.json()) as { data?: { id?: string; message?: string }[] }).data ?? [];
-    return rows.find((row) => row.message === text && typeof row.id === "string")?.id ?? null;
+    let after = "";
+    // Read every page; a post on page two still counts. Give up, and
+    // stay pending, rather than post again after an incomplete lookup.
+    for (let page = 0; page < 10; page += 1) {
+      const cursor = after ? `&after=${encodeURIComponent(after)}` : "";
+      const response = await this.call(`/${encodeURIComponent(pageId)}/${edge}?fields=id,message,created_time&since=${since}&limit=50${cursor}`, token);
+      if (!response.ok) throw new Error(`lookup got status ${response.status}`);
+      const body = (await response.json()) as { data?: { id?: string; message?: string }[]; paging?: { next?: string; cursors?: { after?: string } } };
+      const found = (body.data ?? []).find((row) => row.message === text && typeof row.id === "string");
+      if (found?.id) return found.id;
+      after = body.paging?.next ? (body.paging.cursors?.after ?? "") : "";
+      if (!after) return null;
+    }
+    throw new Error("lookup stopped after 10 pages");
   }
 
-  // Calls for one key run one at a time in this process. Across
-  // processes, run one writer per brand.
+  // Calls for one key and one store run one at a time in this process.
+  // Across processes, run one writer per store.
   async publish(item: FacebookPageItem, options: FacebookPublishOptions = {}): Promise<FacebookPageResult> {
     const brand = (item.brand ?? "").trim();
     const key = postKey(brand, { text: item.text ?? "", link: item.link, key: item.key });
     const keyed: Keyed = { idempotencyKey: idempotencyKey(this.name, brand, key), brand, key };
-    const run = (this.locks.get(keyed.idempotencyKey) ?? Promise.resolve()).then(() => this.publishOnce(item, options, keyed));
-    this.locks.set(keyed.idempotencyKey, run.catch(() => undefined));
+    const locks = LOCKS.get(this.options.state) ?? new Map<string, Promise<unknown>>();
+    LOCKS.set(this.options.state, locks);
+    const run = (locks.get(keyed.idempotencyKey) ?? Promise.resolve()).then(() => this.publishOnce(item, options, keyed));
+    locks.set(keyed.idempotencyKey, run.catch(() => undefined));
     return run;
   }
 

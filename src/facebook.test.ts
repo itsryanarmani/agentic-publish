@@ -13,7 +13,8 @@ import { AllowAllApprovalHook, DenyAllApprovalHook, type ApprovalHook } from "./
 // first call actually succeeded.
 // Review round (Codex): 10. two calls at once both post. 11. a pending
 // post not yet visible gets posted again. 12. a 5xx that hid a real
-// post is retried as a new post.
+// post is retried as a new post. 13. two providers on one store both
+// post. 14. the earlier post is on page two of the feed.
 
 const NOW = 1_773_158_400; // 2026-03-10T16:00:00Z
 const TOKEN = "EAAfakePageToken0123456789abcdef";
@@ -92,9 +93,9 @@ describe("facebook-page provider", () => {
     });
   });
 
-  test("two calls at once post once", async () => {
-    const fb = provider("page-1");
-    const results = await Promise.all([fb.publish(ITEM, LIVE), fb.publish(ITEM, LIVE)]);
+  test("two calls at once post once, even from two providers on one store", async () => {
+    const state = new MemoryPublishStateStore();
+    const results = await Promise.all([provider("page-1", { state }).publish(ITEM, LIVE), provider("page-1", { state }).publish(ITEM, LIVE)]);
     expect(results.map((r) => r.status).sort()).toEqual(["duplicate", "published"]);
     expect(graph.posts).toHaveLength(1);
   });
@@ -108,6 +109,16 @@ describe("facebook-page provider", () => {
     expect(graph.posts).toHaveLength(0);
     const later = provider("page-1", { state, now: () => (NOW + 601) * 1000 });
     expect(await later.publish(ITEM, LIVE)).toMatchObject({ status: "published" });
+  });
+
+  test("finds an earlier post on page two of the feed", async () => {
+    const state = new MemoryPublishStateStore();
+    await provider("page-down", { state }).publish(ITEM, LIVE);
+    const headers = { authorization: "Bearer t", "content-type": "application/x-www-form-urlencoded" };
+    for (let i = 0; i < 55; i += 1) await fetch(`${graph.url}/page-down/feed`, { method: "POST", headers, body: `message=other${i}` });
+    const later = provider("page-down", { state, now: () => (NOW + 601) * 1000 });
+    expect(await later.publish(ITEM, LIVE)).toMatchObject({ status: "duplicate", reconciled: true, postId: "page-down_1" });
+    expect(graph.posts.filter((p) => p.message === ITEM.text)).toHaveLength(1);
   });
 
   test("schedules 10 minutes to 30 days ahead and rejects anything else", async () => {
