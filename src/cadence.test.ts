@@ -23,6 +23,7 @@ import { BrandQueue, MemoryQueueStore } from "./publish.js";
 // Review round (Codex): 8. derived keys ignore targets or media.
 // 9. a ":" in brand or key collides. 10. a key with spaces never
 // matches its record. 11. a scheduled post counts on the wrong day.
+// 12. an item scheduled for tomorrow ignores tomorrow's cap.
 
 const CADENCE: DailyCadence = { timezone: "America/Vancouver", window: "09:00-11:00", maxPerDay: 1 };
 const ITEMS: CadenceItem[] = [
@@ -114,6 +115,19 @@ describe("planDaily", () => {
     const sent = { ...record("tip-001", "published", "2026-03-09T17:00:00Z"), scheduledFor: Date.parse("2026-03-10T17:00:00Z") / 1000 };
     const plan = planDaily({ brand: "acme", items: ITEMS, cadence: CADENCE, history: [sent], now: IN_WINDOW });
     expect(plan).toMatchObject({ due: false, reason: "daily-cap" });
+  });
+
+  test("checks the cap on the day a scheduled item goes out", () => {
+    const tomorrow = Date.parse("2026-03-11T17:00:00Z") / 1000;
+    const sent = { ...record("tip-001", "published", "2026-03-10T16:30:00Z"), scheduledFor: tomorrow };
+    const items: CadenceItem[] = [
+      { key: "later", text: "Later", approved: true, scheduledAt: tomorrow + 600 },
+      { key: "now", text: "Now", approved: true },
+    ];
+    const plan = planDaily({ brand: "acme", items, cadence: CADENCE, history: [sent], now: IN_WINDOW });
+    expect(plan).toMatchObject({ due: true, item: { key: "now" } });
+    const capped = planDaily({ brand: "acme", items: items.slice(0, 1), cadence: CADENCE, history: [sent], now: IN_WINDOW });
+    expect(capped).toMatchObject({ due: false, reason: "daily-cap" });
   });
 
   test("returns no item outside the window", () => {

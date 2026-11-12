@@ -168,13 +168,12 @@ export function planDaily(input: DailyPlanInput): DailyPlan {
   }
   const clock = localClock(now, cadence.timezone);
   const byKey = new Map(input.history.filter((r) => r.brand === brand).map((r) => [r.key, r]));
-  const publishedToday = input.history.filter(
-    // A scheduled post counts on the day it goes out, not the day it was sent.
-    (r) =>
-      r.brand === brand &&
-      r.status === "published" &&
-      localClock(r.scheduledFor ? new Date(r.scheduledFor * 1000) : new Date(r.at), cadence.timezone).date === clock.date,
-  ).length;
+  // A post counts on the local day it goes out, not the day it was sent.
+  const dayOf = (seconds: number | undefined, fallback: Date): string =>
+    seconds ? localClock(new Date(seconds * 1000), cadence.timezone).date : localClock(fallback, cadence.timezone).date;
+  const countOn = (date: string): number =>
+    input.history.filter((r) => r.brand === brand && r.status === "published" && dayOf(r.scheduledFor, new Date(r.at)) === date).length;
+  const publishedToday = countOn(clock.date);
   const base: PlanBase = { brand, localDate: clock.date, localTime: clock.time, publishedToday };
   const nowMinutes = minutes(clock.time);
   if (nowMinutes < from || nowMinutes >= to) return { ...base, due: false, reason: "outside-window" };
@@ -185,11 +184,13 @@ export function planDaily(input: DailyPlanInput): DailyPlan {
   // retried cron never posts a second item in its place.
   const pending = approved.find((item) => byKey.get(keyOf(item))?.status === "pending");
   if (pending) return { ...base, due: true, item: pending, idempotencyKey: keyOf(pending), retry: true };
-  if (publishedToday >= cadence.maxPerDay) return { ...base, due: false, reason: "daily-cap" };
-  const next = approved.find((item) => {
+  const open = approved.filter((item) => {
     const found = byKey.get(keyOf(item));
     return !found || (found.status === "failed" && found.retryable === true);
   });
-  if (!next) return { ...base, due: false, reason: "queue-empty" };
+  if (open.length === 0) return { ...base, due: false, reason: "queue-empty" };
+  // The cap applies to the day each item would go out.
+  const next = open.find((item) => countOn(dayOf(item.scheduledAt, now)) < cadence.maxPerDay);
+  if (!next) return { ...base, due: false, reason: "daily-cap" };
   return { ...base, due: true, item: next, idempotencyKey: keyOf(next), retry: false };
 }
