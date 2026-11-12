@@ -19,6 +19,9 @@ import {
   type SocialPost,
 } from "./publish.js";
 import { VERSION } from "./version.js";
+import type { CadenceItem } from "./cadence.js";
+import type { FacebookPageProvider } from "./facebook.js";
+import { facebookProviderFromEnv, runFacebookDaily } from "./facebook-host.js";
 
 export class UsageError extends Error {
   constructor(message: string) {
@@ -27,7 +30,7 @@ export class UsageError extends Error {
   }
 }
 
-export type CliCommand = "publish" | "queue" | "pacing" | "costs" | "mcp" | "help" | "version";
+export type CliCommand = "publish" | "queue" | "facebook" | "pacing" | "costs" | "mcp" | "help" | "version";
 
 export interface CliRequest {
   command: CliCommand;
@@ -41,6 +44,12 @@ export interface CliRequest {
   sub?: string;
   id?: string;
   limit?: number;
+  key?: string;
+  schedule?: number;
+  items?: string;
+  timezone?: string;
+  window?: string;
+  maxPerDay?: number;
   live: boolean;
   autoApprove: boolean;
 }
@@ -55,6 +64,12 @@ const VALUE_FLAGS = new Set([
   "--adapter",
   "--id",
   "--limit",
+  "--key",
+  "--schedule",
+  "--items",
+  "--timezone",
+  "--window",
+  "--max-per-day",
 ]);
 
 function splitList(value: string): string[] {
@@ -86,6 +101,7 @@ export function parseArgs(argv: string[]): CliRequest {
   if (
     first !== "publish" &&
     first !== "queue" &&
+    first !== "facebook" &&
     first !== "pacing" &&
     first !== "costs" &&
     first !== "mcp"
@@ -93,16 +109,17 @@ export function parseArgs(argv: string[]): CliRequest {
     throw new UsageError(`unknown command "${first}"`);
   }
   request.command = first;
-  if (first === "queue" && args.length > 0 && !args[0].startsWith("--")) {
+  if ((first === "queue" || first === "facebook") && args.length > 0 && !args[0].startsWith("--")) {
     request.sub = args.shift();
   }
   while (args.length > 0) {
     const flag = args.shift() as string;
-    if (flag === "--live" && (request.command === "publish" || request.command === "queue")) {
+    const canGoLive = request.command === "publish" || request.command === "queue" || request.command === "facebook";
+    if (flag === "--live" && canGoLive) {
       request.live = true;
       continue;
     }
-    if (flag === "--auto-approve" && (request.command === "publish" || request.command === "queue")) {
+    if (flag === "--auto-approve" && canGoLive) {
       request.autoApprove = true;
       continue;
     }
@@ -138,6 +155,24 @@ export function parseArgs(argv: string[]): CliRequest {
       case "--limit":
         request.limit = readLimit(flag, value);
         break;
+      case "--key":
+        request.key = value;
+        break;
+      case "--schedule":
+        request.schedule = readLimit(flag, value);
+        break;
+      case "--items":
+        request.items = value;
+        break;
+      case "--timezone":
+        request.timezone = value;
+        break;
+      case "--window":
+        request.window = value;
+        break;
+      case "--max-per-day":
+        request.maxPerDay = readLimit(flag, value);
+        break;
     }
   }
   if (request.command === "publish") {
@@ -170,6 +205,18 @@ export function parseArgs(argv: string[]): CliRequest {
       throw new UsageError("queue remove needs --id");
     }
   }
+  if (request.command === "facebook") {
+    if (request.sub !== "publish" && request.sub !== "daily") {
+      throw new UsageError("facebook needs a subcommand: publish or daily");
+    }
+    if (!request.brand) throw new UsageError(`facebook ${request.sub} needs --brand`);
+    if (request.sub === "publish" && request.text === undefined && request.file === undefined) {
+      throw new UsageError("facebook publish needs --text or --file");
+    }
+    if (request.sub === "daily" && (!request.items || !request.timezone || !request.window)) {
+      throw new UsageError("facebook daily needs --items, --timezone, and --window");
+    }
+  }
   return request;
 }
 
@@ -180,6 +227,7 @@ export interface CliIo {
   adapters: PublishAdapter[];
   queueStore: QueueStore;
   approval?: ApprovalHook;
+  facebook?: FacebookPageProvider;
 }
 
 function defaultIo(): CliIo {
@@ -213,6 +261,11 @@ function helpText(): string {
     "       [--live]  Publish one brand queue in order. Dry run is the",
     "       default. Add --live to post for real.",
     "  queue remove --id <id>  Drop one queued post.",
+    "  facebook publish --brand <b> --text <t> [--key <k>] [--link <u>]",
+    "       [--schedule <unix>] [--auto-approve] [--live]  Post to one Facebook Page.",
+    "       Dry run is the default. Live needs AGENTIC_PUBLISH_FACEBOOK_LIVE=1.",
+    "  facebook daily --brand <b> --items <json> --timezone <tz> --window <HH:MM-HH:MM>",
+    "       [--max-per-day <n>] [--auto-approve] [--live]  Publish the next due item.",
     "  pacing  Print per-channel limits and pacing gaps as JSON.",
     "  costs  Print the cost report as JSON.",
     "  mcp  Start the MCP server on stdio.",
@@ -312,6 +365,29 @@ export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<n
         });
         io.out(JSON.stringify(result));
         return result.failed.length > 0 ? 1 : 0;
+      }
+      case "facebook": {
+        const provider = io.facebook ?? facebookProviderFromEnv();
+        const approval = request.live ? pickApproval(request, io) : undefined;
+        if (request.sub === "daily") {
+          const items = JSON.parse(io.readFile(request.items as string)) as CadenceItem[];
+          const cadence = { timezone: request.timezone as string, window: request.window as string, maxPerDay: request.maxPerDay ?? 1 };
+          const run = await runFacebookDaily({ provider, brand: request.brand as string, items, cadence, dryRun: !request.live, approval });
+          io.out(JSON.stringify(run));
+          return run.result && ["failed", "blocked"].includes(run.result.status) ? 1 : 0;
+        }
+        const result = await provider.publish(
+          {
+            brand: request.brand as string,
+            text: readInput(request, io),
+            ...(request.key ? { key: request.key } : {}),
+            ...(request.link ? { link: request.link } : {}),
+            ...(request.schedule !== undefined ? { scheduledAt: request.schedule } : {}),
+          },
+          { dryRun: !request.live, approval },
+        );
+        io.out(JSON.stringify(result));
+        return ["failed", "blocked"].includes(result.status) ? 1 : 0;
       }
       case "costs":
         io.out(JSON.stringify(getCostReport()));

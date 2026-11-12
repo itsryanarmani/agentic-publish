@@ -38,7 +38,7 @@ const chain = [
 ];
 
 describe("mcp server", () => {
-  test("serves seven tools over a client link", async () => {
+  test("serves nine tools over a client link", async () => {
     const { client, server } = await linked({
       adapters: chain,
       queueStore: new MemoryQueueStore(),
@@ -52,6 +52,8 @@ describe("mcp server", () => {
       const tools = await client.listTools();
       const names = tools.tools.map((tool) => tool.name).sort();
       expect(names).toEqual([
+        "facebook_daily",
+        "facebook_page_publish",
         "get_cost_report",
         "pacing_status",
         "publish_post",
