@@ -367,7 +367,7 @@ describe("pacer", () => {
   test("status reports each channel", () => {
     const pacer = new Pacer({ jitterMs: 0 });
     const status = pacer.status();
-    expect(status).toHaveLength(4);
+    expect(status).toHaveLength(5);
     expect(status[0]).toMatchObject({ channel: "x", delayMs: 0 });
     expect(CHANNEL_LIMITS.x.maxChars).toBe(280);
   });
