@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { postKey } from "./cadence.js";
 import { GuardError, VendorError, recordCost, type Guards, type Logger } from "./core.js";
 
 const require = createRequire(import.meta.url);
@@ -729,6 +730,9 @@ export class Pacer {
 export interface QueuedPost {
   id: string;
   brand: string;
+  // Stable post key; see postKey(). Entries saved before keys existed
+  // have none.
+  key?: string;
   post: SocialPost;
   enqueuedAt: string;
   attempts: number;
@@ -776,6 +780,7 @@ export class FileQueueStore implements QueueStore {
         return {
           id: row.id,
           brand: row.brand,
+          ...(typeof row.key === "string" ? { key: row.key } : {}),
           post: row.post as SocialPost,
           enqueuedAt: typeof row.enqueuedAt === "string" ? row.enqueuedAt : new Date(0).toISOString(),
           attempts: typeof row.attempts === "number" ? row.attempts : 0,
@@ -1054,18 +1059,25 @@ export interface DrainResult {
 export class BrandQueue {
   constructor(private readonly store: QueueStore) {}
 
-  enqueue(brand: string, post: SocialPost): QueuedPost {
+  // A second enqueue of the same post key for one brand returns the
+  // existing entry, so a retried cron cannot queue an item twice.
+  enqueue(brand: string, post: SocialPost, options: { key?: string } = {}): QueuedPost {
     const name = brand.trim();
     if (!name) throw new VendorError("queue: brand must not be empty");
     validatePost(post);
+    const parts = [normalizeTargets(post.targets).join(","), ...(post.mediaUrls ?? [])];
+    const key = postKey(name, { text: post.text, link: post.link, key: options.key, parts });
+    const items = this.store.load();
+    const existing = items.find((item) => item.brand === name && item.key === key);
+    if (existing) return existing;
     const entry: QueuedPost = {
       id: randomUUID(),
       brand: name,
+      key,
       post: { ...post, targets: normalizeTargets(post.targets), brand: name },
       enqueuedAt: new Date().toISOString(),
       attempts: 0,
     };
-    const items = this.store.load();
     items.push(entry);
     this.store.save(items);
     return entry;
